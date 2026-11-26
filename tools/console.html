@@ -166,7 +166,7 @@
         <label>烧录口</label>
         <select id="selPort"><option value="">未连接服务</option></select>
         <label>固件 bin 路径（服务端绝对路径）</label>
-        <input id="inBin" value="/Users/fruge365/Doubao/chats/2026-11-21/new-chat-1/TuyaOpen/apps/eink_chat/.build/bin/eink_chat_QIO_1.0.0.bin">
+        <input id="inBin" value="" placeholder="例如 /path/to/TuyaOpen/apps/eink_chat/.build/bin/eink_chat_QIO_1.0.0.bin">
         <label>或选择本地文件（用于读取文件大小，校验烧录区间）</label>
         <input id="inFile" type="file" accept=".bin">
         <div class="row" style="margin-top:10px">
@@ -278,7 +278,7 @@
           </div>
           <div class="ci">
             <div class="top">WiFi 配网<span class="tag ok" id="cWifi">已联网</span></div>
-            <div class="desc">1.3 内置默认 WiFi 凭据（见 <code>app/eink_chat/src/app_secrets.h</code>），<b>上电自动联网</b>（约 6 秒到 <code>link_up ip=192.168.3.24</code>）。换网用 <code>wifi ssid pwd</code> 覆盖。</div>
+            <div class="desc">1.3 内置默认 WiFi 凭据（见 <code>app/eink_chat/src/app_secrets.h</code>），<b>上电自动联网</b>（约 6 秒到 <code>link_up</code> 后打印本机 IP）。换网用 <code>wifi ssid pwd</code> 覆盖。</div>
           </div>
           <div class="ci">
             <div class="top">板端实时通话<span class="tag warn" id="cRt">通道已通</span></div>
@@ -325,7 +325,7 @@ var S = {
 };
 
 var SVC = 'ws://127.0.0.1:9527';
-var DEFAULT_BIN = '/Users/fruge365/Doubao/chats/2026-11-21/new-chat-1/TuyaOpen/apps/eink_chat/.build/bin/eink_chat_QIO_1.0.0.bin';
+var DEFAULT_BIN = '';   /* 留空由使用者填写服务端绝对路径 */
 
 /* ============================================================
    工具
@@ -804,9 +804,9 @@ setInterval(function(){
   }
   log('T5AI 控制台就绪。先连烧录服务（或直接用串口终端）。', 't-sys');
   if (location.protocol === 'file:'){
-    log('当前是 file:// 直接打开，烧录服务会以 403 拒绝连接。请双击「启动控制台.command」或用 http://127.0.0.1:8899 打开本页；串口终端不受影响。', 't-warn');
+    log('当前是 file:// 直接打开，烧录服务会以 403 拒绝连接。请双击 <code>start-console.command</code>或用 http://127.0.0.1:8899 打开本页；串口终端不受影响。', 't-warn');
   }
-  if ($('inBin').value !== DEFAULT_BIN) $('inBin').value = DEFAULT_BIN;
+  if (DEFAULT_BIN && $('inBin').value !== DEFAULT_BIN) $('inBin').value = DEFAULT_BIN;
   refreshButtons();
   serveConnect();
 })();
