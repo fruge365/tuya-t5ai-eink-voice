@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>T5AI 语音对话板 · 控制台</title>
+<style>
+  :root{
+    --bg:#0a0d12; --panel:rgba(20,26,36,.72); --line:rgba(120,150,190,.16);
+    --txt:#e8ecf4; --dim:#8b97ad; --acc:#37e5c0; --acc2:#7c8cff;
+    --ok:#39d98a; --warn:#f0b429; --err:#ff5c68;
+    --mono:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    min-height:100vh;color:var(--txt);padding:22px;
+    font:13.5px/1.65 -apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;
+    background:
+      radial-gradient(900px 500px at 12% -10%, rgba(124,140,255,.16), transparent 65%),
+      radial-gradient(760px 420px at 92% 0%, rgba(55,229,192,.12), transparent 60%),
+      var(--bg);
+  }
+  .wrap{max-width:1400px;margin:0 auto}
+
+  header{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+  h1{font-size:21px;letter-spacing:.2px}
+  h1 span{color:var(--acc)}
+  .sub{color:var(--dim);font-size:12px;margin-top:4px}
+  .pills{display:flex;gap:8px;flex-wrap:wrap}
+  .pill{
+    display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;
+    border:1px solid var(--line);background:rgba(255,255,255,.03);font-size:12px;color:var(--dim);
+    backdrop-filter:blur(8px);
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:#4b5567;box-shadow:0 0 0 0 rgba(0,0,0,0)}
+  .dot.on{background:var(--ok);box-shadow:0 0 10px rgba(57,217,138,.7)}
+  .dot.warn{background:var(--warn);box-shadow:0 0 10px rgba(240,180,41,.6)}
+  .dot.err{background:var(--err);box-shadow:0 0 10px rgba(255,92,104,.6)}
+
+  .layout{display:grid;grid-template-columns:404px minmax(0,1fr);gap:16px;align-items:start}
+  .stack{display:grid;gap:16px}
+
+  .card{
+    position:relative;border-radius:16px;border:1px solid var(--line);
+    background:var(--panel);backdrop-filter:blur(14px);
+    padding:16px 16px 14px;overflow:hidden;
+  }
+  .card::before{
+    content:'';position:absolute;inset:0 auto auto 0;width:100%;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(55,229,192,.55),rgba(124,140,255,.4),transparent);
+  }
+  .card h2{display:flex;align-items:center;gap:8px;font-size:13px;letter-spacing:.4px;color:#cfd8e8;margin-bottom:12px;text-transform:uppercase}
+  .card h2 i{width:5px;height:14px;border-radius:3px;background:linear-gradient(180deg,var(--acc),var(--acc2))}
+
+  label{display:block;font-size:11.5px;color:var(--dim);margin:8px 0 5px;letter-spacing:.3px}
+  input,select,button,textarea{
+    font-family:inherit;font-size:12.5px;color:var(--txt);background:rgba(255,255,255,.045);
+    border:1px solid var(--line);border-radius:10px;padding:8px 10px;outline:none;width:100%;
+    transition:.16s;
+  }
+  input:focus,select:focus{border-color:rgba(55,229,192,.55);background:rgba(55,229,192,.05)}
+  select{appearance:none;cursor:pointer}
+  button{cursor:pointer;font-weight:500;letter-spacing:.2px}
+  button:hover:not(:disabled){border-color:rgba(55,229,192,.5);color:var(--acc)}
+  button:disabled{opacity:.38;cursor:not-allowed}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .btn-pri{
+    background:linear-gradient(120deg,rgba(55,229,192,.9),rgba(124,140,255,.9));
+    border:none;color:#04120f;font-weight:600;
+  }
+  .btn-pri:hover:not(:disabled){color:#04120f;filter:brightness(1.08)}
+  .btn-ghost{color:var(--dim)}
+
+  .hint{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.55}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:12px;margin-top:10px}
+  .kv b{color:var(--dim);font-weight:400}
+  .kv em{font-style:normal;font-family:var(--mono);color:#cfe9e2;word-break:break-all}
+
+  /* 进度 */
+  .prog{margin-top:10px}
+  .track{height:8px;border-radius:999px;background:rgba(255,255,255,.07);overflow:hidden}
+  .fill{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .25s}
+  .pmeta{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim);margin-top:6px}
+  .pmeta b{color:var(--txt);font-family:var(--mono);font-weight:500}
+
+  /* 终端 */
+  .term{
+    height:392px;overflow:auto;border-radius:12px;border:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(6,10,16,.92),rgba(9,14,22,.96));
+    padding:10px 12px;font-family:var(--mono);font-size:12px;line-height:1.62;white-space:pre-wrap;word-break:break-word;
+  }
+  .term .ln{display:block}
+  .t-tx{color:#7c8cff}
+  .t-rx{color:#9fb4cc}
+  .t-ok{color:var(--ok)}
+  .t-err{color:var(--err)}
+  .t-warn{color:var(--warn)}
+  .t-sys{color:#5d708c}
+  .t-hb{color:#4a5a70}
+  .term::-webkit-scrollbar{width:8px}
+  .term::-webkit-scrollbar-thumb{background:rgba(120,150,190,.25);border-radius:8px}
+
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 2px}
+  .chip{
+    width:auto;padding:4px 10px;font-size:11.5px;border-radius:999px;
+    background:rgba(124,140,255,.09);border:1px solid rgba(124,140,255,.25);color:#b9c2ff;
+  }
+  .chip:hover{border-color:rgba(55,229,192,.5);color:var(--acc)}
+
+  .send{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:8px}
+
+  /* 自检 */
+  .check{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:10px;
+  }
+  .ci{
+    border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,.028);
+  }
+  .ci .top{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:#cfd8e8}
+  .ci .desc{font-size:11px;color:var(--dim);margin-top:4px;line-height:1.5}
+  .tag{font-size:10.5px;padding:2px 7px;border-radius:6px;border:1px solid;letter-spacing:.2px}
+  .tag.ok{color:var(--ok);border-color:rgba(57,217,138,.4);background:rgba(57,217,138,.09)}
+  .tag.warn{color:var(--warn);border-color:rgba(240,180,41,.4);background:rgba(240,180,41,.09)}
+  .tag.err{color:var(--err);border-color:rgba(255,92,104,.4);background:rgba(255,92,104,.09)}
+  .tag.idle{color:var(--dim);border-color:var(--line);background:rgba(255,255,255,.03)}
+
+  details{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
+  summary{cursor:pointer;font-size:11.5px;color:var(--dim);outline:none;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:'▸ ';color:var(--acc)}
+  details[open] summary::before{content:'▾ '}
+  details .body{font-size:11.5px;color:var(--dim);line-height:1.65;margin-top:8px}
+  code{font-family:var(--mono);font-size:11px;background:rgba(124,140,255,.12);padding:1px 5px;border-radius:5px;color:#c3caff}
+
+  @media (max-width:1080px){
+    .layout{grid-template-columns:1fr}
+    .term{height:300px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>T5AI 语音对话板 · <span>控制台</span></h1>
+      <div class="sub">烧录 · 串口 · 配网 · 实时对话自检　|　Tuya T5AI E-Ink NFC 载板（无墨水屏，文字走串口）</div>
+    </div>
+    <div class="pills">
+      <span class="pill"><span class="dot" id="dotServe"></span><span id="txtServe">烧录服务未连接</span></span>
+      <span class="pill"><span class="dot" id="dotSerial"></span><span id="txtSerial">串口未打开</span></span>
+      <span class="pill"><span class="dot" id="dotHb"></span><span id="txtHb">心跳 -</span></span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 左栏 -->
+    <div class="stack">
+      <!-- ===== 烧录 ===== -->
+      <section class="card">
+        <h2><i></i>固件烧录</h2>
+        <div class="row">
+          <button id="btnServe">连接烧录服务</button>
+          <button id="btnPorts" class="btn-ghost" disabled>刷新端口</button>
+        </div>
+        <label>烧录口</label>
+        <select id="selPort"><option value="">未连接服务</option></select>
+        <label>固件 bin 路径（服务端绝对路径）</label>
+        <input id="inBin" value="/Users/fruge365/Doubao/chats/2026-11-21/new-chat-1/TuyaOpen/apps/eink_chat/.build/bin/eink_chat_QIO_1.0.0.bin">
+        <label>或选择本地文件（用于读取文件大小，校验烧录区间）</label>
+        <input id="inFile" type="file" accept=".bin">
+        <div class="row" style="margin-top:10px">
+          <button id="btnFlash" class="btn-pri" disabled>开始烧录</button>
+          <button id="btnReset" disabled>复位设备</button>
+        </div>
+
+        <div class="prog">
+          <div class="track"><div class="fill" id="bar"></div></div>
+          <div class="pmeta"><span id="pPhase">等待任务</span><b id="pPct">0%</b></div>
+        </div>
+        <div class="kv">
+          <b>文件大小</b><em id="kSize">-</em>
+          <b>烧录区间</b><em id="kRange">-</em>
+          <b>耗时</b><em id="kTime">-</em>
+        </div>
+        <div class="hint">烧录前会自动关闭串口连接：同一端口不能被浏览器的串口监视和烧录程序同时占用。</div>
+        <details>
+          <summary>烧录服务没起来？</summary>
+          <div class="body">
+            终端执行：<code>cd TuyaOpen/tools/tyutool &amp;&amp; ./tyutool_cli serve --plain</code>，保持窗口不关。<br>
+            端口被占用时先结束旧的 serve 进程，再重新启动。<br>
+            页面只连接 <code>ws://127.0.0.1:9527</code>，不会主动拉起服务。
+          </div>
+        </details>
+      </section>
+
+      <!-- ===== 设备 ===== -->
+      <section class="card">
+        <h2><i></i>设备状态与配网</h2>
+        <div class="row">
+          <button id="btnVer" disabled>读版本 ver</button>
+          <button id="btnNet" disabled>查网络 net</button>
+        </div>
+        <label>WiFi 名称（SSID）</label>
+        <input id="inSsid" placeholder="例如 Home-5G">
+        <label>WiFi 密码</label>
+        <input id="inPwd" type="password" placeholder="留空则为开放网络">
+        <button id="btnWifi" class="btn-pri" style="margin-top:10px" disabled>下发配网命令</button>
+        <div class="kv">
+          <b>固件</b><em id="kVer">-</em>
+          <b>网络</b><em id="kNet">-</em>
+          <b>IP</b><em id="kIp">-</em>
+        </div>
+        <div class="hint">命令通过烧录口 115200 的私有命令通道下发，回包以 <code>RSP:</code> 开头；每秒一次 <code>RSP:hb0</code> 为在线心跳。</div>
+      </section>
+    </div>
+
+    <!-- 右栏 -->
+    <div class="stack">
+      <section class="card">
+        <h2><i></i>串口终端（Web Serial）</h2>
+        <div class="row">
+          <button id="btnSerial">连接串口</button>
+          <select id="selBaud">
+            <option value="115200" selected>115200 · 命令通道</option>
+            <option value="460800">460800 · 日志口</option>
+          </select>
+        </div>
+        <div class="chips">
+          <button class="chip" data-cmd="ver">ver</button>
+          <button class="chip" data-cmd="help">help</button>
+          <button class="chip" data-cmd="net">net</button>
+          <button class="chip" data-cmd="rt">rt 通道自检</button>
+          <button class="chip" data-cmd="wake 你好小武">开待机唤醒</button>
+          <button class="chip" data-cmd="wake">看待机状态</button>
+          <button class="chip" data-cmd="wake off">关待机</button>
+          <button class="chip" data-cmd="mic 3">测拾音 mic 3</button>
+          <button class="chip" data-cmd="chat 你好，介绍一下你自己">chat 你好</button>
+          <button class="chip" id="chipClear">清屏</button>
+        </div>
+        <div class="term" id="term"></div>
+        <div class="send">
+          <input id="inCmd" placeholder="输入命令，回车发送（wifi ssid pwd / ver / net / chat 文本）">
+          <button id="btnSend" disabled>发送</button>
+        </div>
+        <details>
+          <summary>端口怎么选 / 各端口是什么</summary>
+          <div class="body">
+            弹窗里选 <code>USB Dual_Serial</code>：编号尾 <code>…471</code> 是烧录口（运行期 115200 命令通道），尾 <code>…473</code> 是日志口（460800，内核日志 + WiFi 状态）。<br>
+            页面用的是浏览器原生 Web Serial，不依赖烧录服务的串口转发；Chrome / Edge 桌面版可用，Safari 不支持。
+          </div>
+        </details>
+      </section>
+
+      <!-- ===== 自检 ===== -->
+      <section class="card">
+        <h2><i></i>端到端自检清单</h2>
+        <div class="check">
+          <div class="ci">
+            <div class="top">实时语音 API<span class="tag ok" id="cApi">已实测</span></div>
+            <div class="desc">qwen-audio-3.1-realtime-flash WebSocket：VAD 断句、ASR、AI 文本与音频下行全链路跑通。</div>
+          </div>
+          <div class="ci">
+            <div class="top">板端 HTTPS 通道<span class="tag ok">已跑通</span></div>
+            <div class="desc">内置阿里云 CA 自建 TLS；板端 <code>chat 用一句话介绍杭州</code> 已拿到真实回答。</div>
+          </div>
+          <div class="ci">
+            <div class="top">固件编译<span class="tag ok">通过</span></div>
+            <div class="desc">eink_chat 自研 WS over TLS 版本编出 2.4 MiB 镜像，无 error。</div>
+          </div>
+          <div class="ci">
+            <div class="top">烧录链路<span class="tag ok">已验证</span></div>
+            <div class="desc">经 serve 的 run_job 完成写入并自动复位，握手/擦写/写入/保护全通过。</div>
+          </div>
+          <div class="ci">
+            <div class="top">命令通道<span class="tag ok">心跳正常</span></div>
+            <div class="desc">烧录口 115200 每秒 <code>RSP:hb0</code>；ver / help / net / wifi / chat 全部回包，问答以 <code>RSP:ASR</code> <code>RSP:AI</code> 回显。</div>
+          </div>
+          <div class="ci">
+            <div class="top">WiFi 配网<span class="tag ok" id="cWifi">已联网</span></div>
+            <div class="desc">1.3 内置默认 WiFi 凭据（见 <code>app/eink_chat/src/app_secrets.h</code>），<b>上电自动联网</b>（约 6 秒到 <code>link_up ip=192.168.3.24</code>）。换网用 <code>wifi ssid pwd</code> 覆盖。</div>
+          </div>
+          <div class="ci">
+            <div class="top">板端实时通话<span class="tag warn" id="cRt">通道已通</span></div>
+            <div class="desc">两种入口：按住 <b>ENTER</b> 说话；或先发 <code>wake 你好小武</code> 进入待机，喊「你好，小武」自动开始一轮（免按键）。</div>
+          </div>
+          <div class="item">
+            <div class="top">待机唤醒<span class="tag warn" id="cWake">已上线</span></div>
+            <div class="desc">固件 1.3：<b>上电自动进待机</b>，喊「你好，小武」即自动开一轮。识别容错已放宽（听到「你好…」或名字同音都算，如“你好小五”）。查状态 <code>wake</code> 看 <code>hits/peak/last=</code>，<code>mic 3</code> 自查拾音，<code>wake thr 120</code> 调灵敏度，<code>wake off</code> 关闭。</div>
+          </div>
+          <div class="ci">
+            <div class="top">墨水屏显示<span class="tag warn">已移除</span></div>
+            <div class="desc">屏本体未接，驱动初始化会死等，固件已整段去掉，文字改走串口。</div>
+          </div>
+        </div>
+        <details>
+          <summary>板端操作说明</summary>
+          <div class="body">
+            上电后固件初始化音频、命令通道与实时通话模块；按住 ENTER（GPIO24）说话，松开后结束本轮，板端把录音推给实时会话，AI 回复音频直接由喇叭播报，同时串口打印 <code>[你说]</code> / <code>[AI]</code>。<br>
+            未联网或实时会话不可用时，按键回退到单轮识别 + HTTP 问答的路径。配网命令：<code>wifi &lt;ssid&gt; &lt;pwd&gt;</code>。
+          </div>
+        </details>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   状态
+   ============================================================ */
+var S = {
+  serve: null,
+  serveReady: false,
+  ports: [],
+  flashing: false,
+  serialPort: null,
+  serialWriter: null,
+  serialReader: null,
+  serialOpen: false,
+  hbCount: 0,
+  lastHb: 0,
+  cmdQueue: false,
+  fileSize: 0
+};
+
+var SVC = 'ws://127.0.0.1:9527';
+var DEFAULT_BIN = '/Users/fruge365/Doubao/chats/2026-11-21/new-chat-1/TuyaOpen/apps/eink_chat/.build/bin/eink_chat_QIO_1.0.0.bin';
+
+/* ============================================================
+   工具
+   ============================================================ */
+function $(id){ return document.getElementById(id); }
+
+function log(text, cls){
+  var t = $('term');
+  var lines = String(text).replace(/\r/g, '').split('\n');
+  for (var i = 0; i < lines.length; i++){
+    if (lines[i] === '') continue;
+    var span = document.createElement('span');
+    span.className = 'ln ' + (cls || 't-rx');
+    span.textContent = lines[i];
+    t.appendChild(span);
+  }
+  while (t.childNodes.length > 900) t.removeChild(t.firstChild);
+  t.scrollTop = t.scrollHeight;
+}
+
+function stamp(){
+  var d = new Date();
+  function p(n){ return (n < 10 ? '0' : '') + n; }
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+function setDot(id, state){
+  var el = $(id);
+  el.className = 'dot' + (state ? ' ' + state : '');
+}
+
+function refreshButtons(){
+  var serialOk = S.serialOpen;
+  $('btnSend').disabled = !serialOk;
+  $('inCmd').disabled = !serialOk;
+  $('btnVer').disabled = !serialOk;
+  $('btnNet').disabled = !serialOk;
+  $('btnWifi').disabled = !serialOk;
+  var chips = document.querySelectorAll('.chip[data-cmd]');
+  for (var i = 0; i < chips.length; i++) chips[i].disabled = !serialOk;
+
+  $('btnFlash').disabled = !(S.serveReady && S.ports.length > 0) || S.flashing;
+  $('btnReset').disabled = !(S.serveReady && S.ports.length > 0) || S.flashing;
+  $('btnPorts').disabled = !S.serveReady;
+}
+
+/* ============================================================
+   烧录服务（tyutool serve）
+   ============================================================ */
+function serveConnect(){
+  if (S.serve && (S.serveReady || S.serve.readyState === 0 || S.serve.readyState === 1)){
+    S.serve.onclose = null;
+    try { S.serve.close(); } catch (e) {}
+  }
+  log(stamp() + '  连接烧录服务 ' + SVC + ' …', 't-sys');
+
+  var ws;
+  try { ws = new WebSocket(SVC); }
+  catch (e){ log('无法创建连接：' + e.message, 't-err'); return; }
+
+  S.serve = ws;
+
+  ws.onopen = function(){
+    S.serveReady = true;
+    setDot('dotServe', 'on');
+    $('txtServe').textContent = '烧录服务已连接';
+    $('btnServe').textContent = '重新连接';
+    log(stamp() + '  烧录服务已连接', 't-ok');
+    serveSend({ type: 'list_ports' });
+    refreshButtons();
+  };
+
+  ws.onerror = function(){
+    log(stamp() + '  烧录服务连接出错（服务是否在运行？）', 't-err');
+  };
+
+  ws.onclose = function(){
+    S.serveReady = false;
+    setDot('dotServe', 'err');
+    $('txtServe').textContent = '烧录服务未连接';
+    $('btnServe').textContent = '连接烧录服务';
+    log(stamp() + '  烧录服务已断开', 't-warn');
+    refreshButtons();
+  };
+
+  ws.onmessage = function(ev){ serveOnMessage(ev.data); };
+}
+
+function serveSend(obj){
+  if (!S.serve || S.serve.readyState !== 1) return false;
+  S.serve.send(JSON.stringify(obj));
+  return true;
+}
+
+function serveOnMessage(raw){
+  var m;
+  try { m = JSON.parse(raw); } catch (e){ return; }
+  var type = m.type;
+
+  if (type === 'ports'){
+    S.ports = m.ports || [];
+    renderPorts();
+    return;
+  }
+
+  if (type === 'error'){
+    log(stamp() + '  [服务错误] ' + JSON.stringify(m.error || m.payload || m) , 't-err');
+    return;
+  }
+
+  if (type === 'device_reset_result'){
+    log(stamp() + '  复位：' + (m.ok ? '完成' : '失败'), m.ok ? 't-ok' : 't-err');
+    return;
+  }
+
+  if (type === 'progress'){
+    handleProgress(m.payload || {});
+    return;
+  }
+}
+
+function renderPorts(){
+  var sel = $('selPort');
+  sel.innerHTML = '';
+  if (!S.ports.length){
+    var o = document.createElement('option');
+    o.value = ''; o.textContent = '未发现串口';
+    sel.appendChild(o);
+    refreshButtons();
+    return;
+  }
+  var chosen = '';
+  for (var i = 0; i < S.ports.length; i++){
+    var p = S.ports[i];
+    var o2 = document.createElement('option');
+    o2.value = p.path;
+    var label = p.path.replace('/dev/cu.', '');
+    var iface = p.usbInterface === 1 ? '烧录/命令口' : (p.usbInterface === 3 ? '日志口' : '其他');
+    o2.textContent = label + '　· ' + iface;
+    sel.appendChild(o2);
+    if (p.usbInterface === 1 && !chosen) chosen = p.path;
+  }
+  sel.value = chosen || S.ports[0].path;
+  log(stamp() + '  发现 ' + S.ports.length + ' 个串口', 't-sys');
+  refreshButtons();
+}
+
+function handleProgress(p){
+  var kind = p.kind;
+
+  if (kind === 'job_summary'){
+    var d = p.details || {};
+    if (d.firmware_size) setSizeInfo(d.firmware_size);
+    if (d.range_start && d.range_end) $('kRange').textContent = d.range_start + ' → ' + d.range_end;
+    log(stamp() + '  任务已受理：' + (d.type || 'flash') + ' ' + (d.range_start || '') + '~' + (d.range_end || ''), 't-sys');
+    return;
+  }
+
+  if (kind === 'phase'){
+    var name = typeof p.phase === 'string' ? p.phase : Object.keys(p.phase || {})[0] || '?';
+    var extra = '';
+    if (typeof p.phase === 'object' && p.phase && p.phase[name]){
+      var seg = p.phase[name];
+      if (seg && seg.current !== undefined) extra = ' ' + seg.current + '/' + seg.total;
+    }
+    var label = (phaseMap[name] || name) + extra;
+    $('pPhase').textContent = label;
+    log(stamp() + '  阶段：' + label, 't-sys');
+    return;
+  }
+
+  if (kind === 'percent'){
+    var v = typeof p.value === 'number' ? p.value : 0;
+    $('bar').style.width = Math.max(0, Math.min(100, v)) + '%';
+    $('pPct').textContent = Math.round(v) + '%';
+    return;
+  }
+
+  if (kind === 'milestone'){
+    var ms = p.milestone;
+    var text;
+    if (typeof ms === 'string'){
+      text = msMap[ms] || ms;
+    } else if (ms && ms.flash_id_read){
+      text = 'Flash ID 0x' + Number(ms.flash_id_read.mid).toString(16).toUpperCase();
+    } else {
+      text = JSON.stringify(ms);
+    }
+    log(stamp() + '  节点：' + text, 't-ok');
+    return;
+  }
+
+  if (kind === 'done'){
+    var res = p.result || {};
+    var secs = (res.ok && res.ok.elapsed_secs) ? res.ok.elapsed_secs : 0;
+    S.flashing = false;
+    $('bar').style.width = '100%';
+    $('pPct').textContent = '100%';
+    $('pPhase').textContent = res.ok ? '烧录完成' : '烧录失败';
+    $('kTime').textContent = secs ? (secs.toFixed(1) + ' s') : '-';
+    log(stamp() + (res.ok ? '  烧录完成，用时 ' + secs.toFixed(1) + ' s，设备已复位' : '  烧录失败：' + JSON.stringify(res.err || res)), res.ok ? 't-ok' : 't-err');
+    refreshButtons();
+    return;
+  }
+}
+
+var phaseMap = {
+  handshake: '握手', read_flash_id: '读 Flash ID', unprotect: '解除保护',
+  write_segment: '写分段', erase: '擦除', write: '写入', protect: '写保护', reboot: '复位'
+};
+var msMap = {
+  handshake_complete: '握手成功', erase_complete: '擦除完成',
+  write_complete: '写入完成', rebooted: '设备已复位'
+};
+
+function setSizeInfo(size){
+  S.fileSize = size;
+  $('kSize').textContent = (size / 1048576).toFixed(2) + ' MiB（' + size + ' 字节）';
+  $('kRange').textContent = '0x00000000 → ' + hex8(size);
+}
+
+function hex8(n){
+  var s = n.toString(16).toUpperCase();
+  while (s.length < 8) s = '0' + s;
+  return '0x' + s;
+}
+
+/* 烧录前释放串口，避免端口冲突 */
+function flashStart(){
+  var bin = $('inBin').value.trim();
+  var port = $('selPort').value;
+  if (!bin){ log('请填写固件 bin 的绝对路径', 't-err'); return; }
+  if (!port){ log('请先选择烧录口', 't-err'); return; }
+  if (!S.fileSize){
+    log('请先选择本地 bin 文件，用于确认烧录区间长度', 't-err');
+    return;
+  }
+
+  var go = function(){
+    S.flashing = true;
+    $('bar').style.width = '0%';
+    $('pPct').textContent = '0%';
+    $('pPhase').textContent = '提交任务';
+    $('kTime').textContent = '-';
+    refreshButtons();
+    var job = {
+      mode: 'flash',
+      chipId: 't5',
+      port: port,
+      baudRate: 921600,
+      firmwarePath: bin,
+      flashStartHex: '0x00000000',
+      flashEndHex: hex8(S.fileSize)
+    };
+    log(stamp() + '  提交烧录任务 ' + hex8(S.fileSize), 't-sys');
+    if (!serveSend({ type: 'run_job', job: job })){
+      log('烧录服务未连接', 't-err');
+      S.flashing = false;
+      refreshButtons();
+    }
+  };
+
+  if (S.serialOpen){
+    log(stamp() + '  先关闭串口连接以释放端口…', 't-warn');
+    serialClose().then(go, go);
+  } else {
+    go();
+  }
+}
+
+/* ============================================================
+   Web Serial
+   ============================================================ */
+function serialSupported(){
+  return typeof navigator !== 'undefined' && 'serial' in navigator;
+}
+
+async function serialOpen(){
+  if (!serialSupported()){
+    log('当前浏览器不支持 Web Serial，请用 Chrome / Edge 桌面版打开本页面', 't-err');
+    return;
+  }
+  try {
+    var port = await navigator.serial.requestPort();
+    var baud = parseInt($('selBaud').value, 10);
+    await port.open({ baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+    S.serialPort = port;
+    S.serialOpen = true;
+    S.serialWriter = port.writable.getWriter();
+    setDot('dotSerial', 'on');
+    $('txtSerial').textContent = '串口已打开 ' + baud;
+    $('btnSerial').textContent = '断开串口';
+    log(stamp() + '  串口已打开 @ ' + baud, 't-ok');
+    refreshButtons();
+    readLoop(port);
+    setTimeout(function(){ sendCmd('ver'); }, 600);
+  } catch (e){
+    if (e && e.name === 'NotFoundError') log('已取消选择端口', 't-warn');
+    else log('打开串口失败：' + (e && e.message ? e.message : e), 't-err');
+  }
+}
+
+async function readLoop(port){
+  var decoder = new TextDecoder();
+  var buf = '';
+  try {
+    while (port.readable && S.serialOpen){
+      var reader = port.readable.getReader();
+      S.serialReader = reader;
+      try {
+        while (true){
+          var r = await reader.read();
+          if (r.done) break;
+          buf += decoder.decode(r.value, { stream: true });
+          var idx;
+          while ((idx = buf.indexOf('\n')) >= 0){
+            var line = buf.slice(0, idx).replace(/\r/g, '');
+            buf = buf.slice(idx + 1);
+            onSerialLine(line);
+          }
+          if (buf.length > 2048){ onSerialLine(buf); buf = ''; }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+  } catch (e){
+    if (S.serialOpen) log('读取中断：' + (e && e.message ? e.message : e), 't-err');
+  }
+}
+
+function onSerialLine(line){
+  var s = line.trim();
+  if (!s) return;
+
+  if (s.indexOf('RSP:hb') === 0){
+    S.hbCount++;
+    S.lastHb = Date.now();
+    setDot('dotHb', 'on');
+    $('txtHb').textContent = '心跳 #' + S.hbCount;
+    return;
+  }
+
+  if (s.indexOf('RSP:ASR ') === 0){
+    log(stamp() + '  [你说] ' + s.slice(8), 't-tx');
+    return;
+  }
+  if (s.indexOf('RSP:AI ') === 0){
+    log(stamp() + '  [AI] ' + s.slice(7), 't-ok');
+    return;
+  }
+
+  if (s.indexOf('RSP:') === 0){
+    log(stamp() + '  ← ' + s, 't-rx');
+    var vm = s.match(/eink_chat\s+([0-9.]+)/);
+    if (vm) $('kVer').textContent = 'eink_chat ' + vm[1] + ' · UART 命令通道';
+    if (s.indexOf('RSP:NET link_down') >= 0){
+      $('kNet').textContent = '未连接';
+      $('kIp').textContent = '-';
+    }
+    if (s.indexOf('OK connecting') >= 0 || s.indexOf('OK connecting to') >= 0){
+      $('cWifi').className = 'tag warn';
+      $('cWifi').textContent = '连接中';
+    }
+    if (/ip\s*:/i.test(s) || /\d+\.\d+\.\d+\.\d+/.test(s)){
+      var m = s.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
+      if (m){
+        $('kIp').textContent = m[1];
+        $('kNet').textContent = '已联网';
+        $('cWifi').className = 'tag ok';
+        $('cWifi').textContent = '已联网';
+        $('cRt').className = 'tag warn';
+        $('cRt').textContent = '可按键测试';
+      }
+    }
+    if (s.indexOf('ERR') >= 0) log(stamp() + '  命令返回错误', 't-err');
+    return;
+  }
+
+  if (s.indexOf('[AI]') === 0) { log(stamp() + '  ' + s, 't-ok'); return; }
+  if (s.indexOf('[你说]') === 0) { log(stamp() + '  ' + s, 't-tx'); return; }
+
+  log(stamp() + '  ' + s, 't-rx');
+}
+
+async function serialClose(){
+  S.serialOpen = false;
+  try { if (S.serialReader) S.serialReader.cancel(); } catch (e) {}
+  try { if (S.serialWriter) S.serialWriter.releaseLock(); } catch (e) {}
+  try { if (S.serialPort) await S.serialPort.close(); } catch (e) {}
+  S.serialPort = null; S.serialWriter = null; S.serialReader = null;
+  setDot('dotSerial', '');
+  setDot('dotHb', '');
+  $('txtSerial').textContent = '串口未打开';
+  $('txtHb').textContent = '心跳 -';
+  $('btnSerial').textContent = '连接串口';
+  refreshButtons();
+  log(stamp() + '  串口已关闭', 't-sys');
+}
+
+function sendCmd(cmd){
+  if (!S.serialOpen || !S.serialWriter) return;
+  cmd = String(cmd).trim();
+  if (!cmd) return;
+  var payload = new TextEncoder().encode(cmd + '\r\n');
+  S.serialWriter.write(payload).catch(function(e){ log('发送失败：' + e.message, 't-err'); });
+  log(stamp() + '  → ' + cmd, 't-tx');
+}
+
+/* ============================================================
+   事件绑定
+   ============================================================ */
+$('btnServe').onclick = serveConnect;
+
+$('btnPorts').onclick = function(){
+  log(stamp() + '  刷新端口列表', 't-sys');
+  serveSend({ type: 'list_ports' });
+};
+
+$('btnFlash').onclick = flashStart;
+
+$('btnReset').onclick = function(){
+  var port = $('selPort').value;
+  if (!port) return;
+  log(stamp() + '  下发复位命令…', 't-sys');
+  serveSend({ type: 'device_reset', port: port, chip_id: 't5' });
+};
+
+$('inFile').onchange = function(ev){
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  setSizeInfo(f.size);
+  log(stamp() + '  选中文件 ' + f.name + '（' + f.size + ' 字节）', 't-sys');
+};
+
+$('btnSerial').onclick = function(){
+  if (S.serialOpen) serialClose();
+  else serialOpen();
+};
+
+$('btnSend').onclick = function(){ sendCmd($('inCmd').value); $('inCmd').value = ''; };
+$('inCmd').onkeydown = function(ev){
+  if (ev.key === 'Enter'){ sendCmd($('inCmd').value); $('inCmd').value = ''; }
+};
+
+$('btnVer').onclick = function(){ sendCmd('ver'); };
+$('btnNet').onclick = function(){ sendCmd('net'); };
+$('btnWifi').onclick = function(){
+  var ssid = $('inSsid').value.trim();
+  var pwd = $('inPwd').value.trim();
+  if (!ssid){ log('请填写 WiFi 名称', 't-err'); return; }
+  sendCmd('wifi ' + ssid + (pwd ? ' ' + pwd : ''));
+};
+
+var chips = document.querySelectorAll('.chip[data-cmd]');
+for (var i = 0; i < chips.length; i++){
+  chips[i].onclick = function(ev){ sendCmd(ev.currentTarget.getAttribute('data-cmd')); };
+}
+$('chipClear').onclick = function(){ $('term').innerHTML = ''; };
+
+/* 心跳超时提示 */
+setInterval(function(){
+  if (S.serialOpen && S.lastHb && Date.now() - S.lastHb > 5000){
+    setDot('dotHb', 'warn');
+    $('txtHb').textContent = '心跳超时（' + Math.round((Date.now() - S.lastHb) / 1000) + 's）';
+    $('cRt').className = 'tag warn';
+  }
+}, 1000);
+
+/* ============================================================
+   启动
+   ============================================================ */
+(function init(){
+  if (!serialSupported()){
+    log('本页面的串口监视依赖 Web Serial，当前浏览器不支持。请用 Chrome / Edge 打开。', 't-warn');
+  }
+  log('T5AI 控制台就绪。先连烧录服务（或直接用串口终端）。', 't-sys');
+  if (location.protocol === 'file:'){
+    log('当前是 file:// 直接打开，烧录服务会以 403 拒绝连接。请双击「启动控制台.command」或用 http://127.0.0.1:8899 打开本页；串口终端不受影响。', 't-warn');
+  }
+  if ($('inBin').value !== DEFAULT_BIN) $('inBin').value = DEFAULT_BIN;
+  refreshButtons();
+  serveConnect();
+})();
+</script>
+</body>
+</html>

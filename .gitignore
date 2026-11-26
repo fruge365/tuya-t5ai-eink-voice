@@ -1,0 +1,14 @@
+# 本地密钥（不入库）
+app/eink_chat/src/app_secrets.h
+
+# 构建产物
+.build/
+dist/
+*.bin
+*.elf
+*.map
+
+# 其他
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,12 @@
+menu "configure app (eink_chat) "
+
+config PROJECT_VERSION
+    string "project version"
+    default "1.0.0"
+
+config APP_ENABLE_U8G2
+    bool
+    default y
+    select ENABLE_LIBU8G2
+
+endmenu

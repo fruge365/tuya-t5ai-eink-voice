@@ -1,0 +1,44 @@
+diff --git a/boards/T5AI/TUYA_T5AI_EINK_NFC/tuya_t5ai_eink_nfc.c b/boards/T5AI/TUYA_T5AI_EINK_NFC/tuya_t5ai_eink_nfc.c
+index 7e7c7d3..846ab79 100755
+--- a/boards/T5AI/TUYA_T5AI_EINK_NFC/tuya_t5ai_eink_nfc.c
++++ b/boards/T5AI/TUYA_T5AI_EINK_NFC/tuya_t5ai_eink_nfc.c
+@@ -24,7 +24,7 @@
+ /***********************************************************
+ ************************macro define************************
+ ***********************************************************/
+-#define BOARD_SPEAKER_EN_PIN TUYA_GPIO_NUM_42
++#define BOARD_SPEAKER_EN_PIN TUYA_GPIO_NUM_39
+ 
+ // Button pin definitions
+ #define BOARD_BUTTON_UP_PIN           TUYA_GPIO_NUM_22
+@@ -57,7 +57,7 @@
+ // #define BOARD_EINK_SPI_RST_PIN  TUYA_GPIO_NUM_7
+ #define BOARD_EINK_SPI_SCLK_PIN TUYA_GPIO_NUM_44
+ #define BOARD_EINK_SPI_SDI_PIN  TUYA_GPIO_NUM_46
+-#define BOARD_EINK_SPI_BUSY_PIN TUYA_GPIO_NUM_13
++#define BOARD_EINK_SPI_BUSY_PIN TUYA_GPIO_NUM_MAX // BUSY 引脚实际未连接，走驱动固定 3s 延时
+ #define BOARD_EINK_BL_PIN       TUYA_GPIO_NUM_33 // Backlight/front light
+ #define BOARD_EINK_BL_ACTIVE_LV TUYA_GPIO_LEVEL_HIGH
+ 
+@@ -118,7 +118,10 @@ OPERATE_RET __board_register_audio(void)
+     TDD_AUDIO_T5AI_T cfg = {0};
+     memset(&cfg, 0, sizeof(TDD_AUDIO_T5AI_T));
+ 
+-    cfg.aec_enable = 1;
++    /* AEC 关闭对照实验：AEC v3 硬件模式（AEC_MODE_HARDWARE + ec_only_output=1）
++     * 疑似导致喇叭输出通道静音（vt 回环 aec=0 时能出声，正常播放路径无声）。
++     * 本应用为半双工（AI 说话期间 mic 暂停拾音），无 AEC 需求 */
++    cfg.aec_enable = 0;
+ 
+     cfg.ai_chn      = TKL_AI_0;
+     cfg.sample_rate = TKL_AUDIO_SAMPLE_16K;
+@@ -127,6 +130,9 @@ OPERATE_RET __board_register_audio(void)
+ 
+     cfg.spk_sample_rate  = TKL_AUDIO_SAMPLE_16K;
+     cfg.spk_pin          = BOARD_SPEAKER_EN_PIN;
++    /* 该板功放为「高电平使能」（spkab A/B 对照实测：PA=高 声音洪亮，PA=低 无声）。
++     * tkl 层 polarity 语义 = 使能电平极性（0=高使能/播放拉高，1=低使能），
++     * 故取 LOW(0)=高使能：tkl init 拉播放电平（高），静音拉低 */
+     cfg.spk_pin_polarity = TUYA_GPIO_LEVEL_LOW;
+ 
+     TUYA_CALL_ERR_RETURN(tdd_audio_register(AUDIO_CODEC_NAME, cfg));
