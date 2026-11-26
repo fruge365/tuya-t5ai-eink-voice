@@ -218,6 +218,15 @@ static void __mic_cb(TDL_AUDIO_FRAME_FORMAT_E type, TDL_AUDIO_STATUS_E status,
         }
         return;
     }
+    /* 预连接已握手但还没开麦：这份音频既要补发给服务器（唤醒确认后上行），
+     * 也要继续写进采样窗给 ASR 识别唤醒词，所以这里不 return */
+    if (eink_xz_is_paused()) {
+        /* 排除喇叭自声（测试音/问候语），否则这段声音会被当成用户语音上行 */
+        if (TDL_AUDIO_FRAME_FORMAT_PCM == type && data && len > 0 &&
+            tal_system_get_millisecond() >= s_spk_mute_until) {
+            eink_xz_on_pcm(data, len);
+        }
+    }
 
     if (!sg_app.rec_active || NULL == data || 0 == len) {
         return;
@@ -271,6 +280,7 @@ static volatile BOOL_T s_wake_on = TRUE;      /* 上电即进入待机监听 */
 static char            s_wake_word[32] = WAKE_WORD_DEFAULT;
 static volatile uint32_t s_wake_cnt = 0;
 static volatile int    s_wake_peak = 0;
+static volatile int    s_wake_peak_strong = 0;   /* 本次窗口内最大单步峰值（预连接判据） */
 static volatile int    s_wake_thr = WAKE_PEAK_MIN;
 static char            s_wake_last[128];
 static volatile BOOL_T s_mic_test = FALSE;
@@ -823,11 +833,33 @@ static void __uart_cmd_dispatch(char *line)
             } else {
                 snprintf(reply, sizeof(reply), "RSP:当前没有小智对话\r\n");
             }
+        } else if (0 == strcmp(arg, "pre")) {
+            snprintf(reply, sizeof(reply), eink_xz_preconnect()
+                     ? "RSP:预连接已发起 握手期间不开麦\r\n"
+                     : "RSP:预连接未发起（已有会话/冷却中/小智关闭）\r\n");
+        } else if (0 == strcmp(arg, "arm")) {
+            eink_xz_arm();
+            for (int i = 0; i < 100 && !eink_xz_is_active(); i++) {
+                if (!eink_xz_engaged()) { break; }
+                tal_system_sleep(80);
+            }
+            snprintf(reply, sizeof(reply), eink_xz_is_active()
+                     ? "RSP:已开麦 可直接说话\r\n" : "RSP:通道未就绪 见日志\r\n");
+        } else if (0 == strcmp(arg, "abort")) {
+            eink_xz_abort();
+            snprintf(reply, sizeof(reply), "RSP:已放弃预连接\r\n");
+        } else if (0 == strncmp(arg, "boost", 5)) {
+            int b = atoi(arg + 5);
+            if (b < 0) { b = 0; }
+            if (b > 60) { b = 60; }
+            eink_xz_set_boost(b);
+            snprintf(reply, sizeof(reply), "RSP:开局增益补偿=%d%% 持续3秒\r\n", b);
         } else if (0 == strcmp(arg, "on")) {
             eink_xz_set_enable(TRUE);
             snprintf(reply, sizeof(reply), "RSP:小智模式已开启 唤醒词将走 xiaozhi.me\r\n");
         } else if (0 == strcmp(arg, "off")) {
             eink_xz_set_enable(FALSE);
+            eink_xz_standby_off();
             snprintf(reply, sizeof(reply), "RSP:小智模式已关闭\r\n");
         } else if (0 == arg[0]) {
             eink_xz_start();
@@ -895,6 +927,38 @@ static void __uart_cmd_dispatch(char *line)
             eink_chat_spk_mute(11500);
             snprintf(reply, sizeof(reply),
                      "RSP:spkab 完成 前5秒PA=低 后5秒PA=高 第5秒处有变化吗\r\n");
+        }
+    } else if (0 == strncmp(line, "spklong", 7)) {
+        /* 连续恒幅 1kHz 长音：用来判断「唤醒后开头几句声音小」是硬件起振还是数据侧。
+         * 听感对照：前 1~2 秒明显偏小、越往后越大 → 功放/耦合电容起振；
+         * 从头到尾一样响 → 硬件正常，问题在链路侧（看 xz boost / 播放预热） */
+        int sec = 8;
+        char *arg = line + 7;
+        while (' ' == *arg) { arg++; }
+        if (arg[0]) { sec = atoi(arg); }
+        if (sec < 1) { sec = 1; }
+        if (sec > 15) { sec = 15; }
+        TDL_AUDIO_HANDLE_T audio = eink_chat_audio_handle();
+        if (NULL == audio) {
+            snprintf(reply, sizeof(reply), "RSP:spklong fail audio handle NULL\r\n");
+        } else {
+            static int16_t tlong[640];
+            const int blocks = sec * 25;        /* 40ms 一块 */
+            eink_chat_spk_mute(sec * 1000 + 2000);
+            __uart_reply("RSP:spklong 开始 恒幅1kHz 注意听开头与后段是否一样响\r\n");
+            for (int blk = 0; blk < blocks; blk++) {
+                for (int i = 0; i < 640; i++) {
+                    float ph = (float)(((blk * 640 + i) % 16)) / 16.0f;
+                    tlong[i] = (int16_t)(16000.0f * eink_xz_get_speaker_vol() / 100.0f
+                                         * sinf(6.2831853f * ph));
+                }
+                tdl_audio_play(audio, (uint8_t *)tlong, 1280);
+                if (0 == (blk % 25)) {
+                    PR_NOTICE("[SPK] 长音 t=%ds/%ds", blk / 25, sec);
+                }
+            }
+            eink_chat_spk_mute(1500);
+            snprintf(reply, sizeof(reply), "RSP:spklong 完成 %d秒 恒幅1kHz\r\n", sec);
         }
     } else if (0 == strncmp(line, "vol", 3) &&
                (0 == line[3] || ' ' == line[3])) {
@@ -1031,10 +1095,10 @@ static void __uart_cmd_dispatch(char *line)
             return;
         }
     } else if (0 == strcmp(line, "ver")) {
-        snprintf(reply, sizeof(reply), "RSP:版本 eink_chat 1.7 小智+百炼实时\r\n");
+        snprintf(reply, sizeof(reply), "RSP:版本 eink_chat 1.8 小智预连接+起振补偿\r\n");
     } else if (0 == strcmp(line, "help")) {
         snprintf(reply, sizeof(reply),
-                 "RSP:命令 wifi <名称> <密码> | net | chat <文本> | rt | wake <唤醒词|on|off|thr 门限> | mic <秒> | call [end] | xz [end|on|off] | spk 喇叭自检 | ver\r\n");
+                 "RSP:命令 wifi <名称> <密码> | net | chat <文本> | rt | wake <唤醒词|on|off|thr 门限> | mic <秒> | call [end] | xz [end|on|off|pre|arm|abort|boost N] | spk 喇叭自检 | spklong <秒> | vol <0-100> | ver\r\n");
     } else if (line[0]) {
         snprintf(reply, sizeof(reply), "RSP:错误 未知命令\r\n");
     } else {
@@ -1774,9 +1838,19 @@ static void __wake_prepare(void)
 static BOOL_T __rt_auto_call(void)
 {
     if (eink_xz_enabled()) {
-        if (!eink_xz_start()) {
-            PR_ERR("[对话] 小智通道连接失败");
-            return FALSE;
+        eink_xz_arm();              /* 预连接就绪 → 立即开麦并补发缓冲音频 */
+        /* 还在握手就等它完成（预连接通常已就绪；兜底最多等 4 秒） */
+        for (int i = 0; i < 100 && !eink_xz_is_active(); i++) {
+            if (!eink_xz_engaged()) { break; }
+            tal_system_sleep(80);
+        }
+        if (!eink_xz_is_active()) {
+            PR_ERR("[对话] 小智通道未就绪，重新发起连接");
+            eink_xz_arm();
+            for (int i = 0; i < 100 && !eink_xz_is_active(); i++) {
+                if (!eink_xz_engaged()) { break; }
+                tal_system_sleep(80);
+            }
         }
         while (eink_xz_engaged()) {
             tal_system_sleep(100);
@@ -1800,6 +1874,60 @@ static BOOL_T __rt_auto_call(void)
     return TRUE;
 }
 
+/* 采样窗口：默认最长 WAKE_WIN_MS，检测到「说过话 + 随后 500ms 静音」就提前收窗，
+ * 少等 1~2 秒；首次越阈立刻发起小智预连接，把 OTA+TLS+WS 握手藏进 ASR 耗时里 */
+static void __wake_capture(void)
+{
+    const int step = 100;
+    uint32_t prev = 0;
+    BOOL_T voiced = FALSE;
+    int sil_ms = 0;
+    BOOL_T pre = FALSE;
+
+    s_wake_peak_strong = 0;
+    sg_app.rec_len = 0;
+    sg_app.rec_active = TRUE;
+    for (int t = 0; t < WAKE_WIN_MS; t += step) {
+        tal_system_sleep(step);
+
+        /* 喇叭自声/测试音期间整窗作废：别把自己的声音当唤醒词去握手 */
+        if (tal_system_get_millisecond() < s_spk_mute_until) {
+            sg_app.rec_active = FALSE;
+            sg_app.rec_len = 0;
+            return;
+        }
+
+        /* 本步新增样本的峰值（窗口 3.2s、线性写入，pos 不会绕回） */
+        {
+            int16_t *pcm = (int16_t *)sg_app.pcm_buf;
+            uint32_t n = sg_app.rec_len / 2;
+            int pk = 0;
+            for (uint32_t i = prev; i < n; i++) {
+                int v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+                if (v > pk) { pk = v; }
+            }
+            prev = n;
+            if (pk > s_wake_peak_strong) { s_wake_peak_strong = pk; }
+            if (pk >= s_wake_thr) {
+                voiced = TRUE;
+                sil_ms = 0;
+            } else if (voiced) {
+                sil_ms += step;
+            }
+        }
+
+        /* 听到明确的说话声（峰值 ≥4000，环境噪声通常 <2000）才投机握手，
+         * 且要持续 300ms 以上，避免关门声、拍桌子这类瞬时噪声触发连接 */
+        if (voiced && !pre && !s_mic_test && t >= 300 && s_wake_peak_strong >= 4000) {
+            pre = eink_xz_preconnect();
+        }
+        if (voiced && sil_ms >= 500 && t >= 1200) {
+            break;      /* 说完就收窗，不再死等满 3.2s */
+        }
+    }
+    sg_app.rec_active = FALSE;
+}
+
 /* 待机循环：采样 → 能量门限 → ASR → 唤醒词匹配 → 自动对话 */
 static void __wake_thread(void *arg)
 {
@@ -1815,16 +1943,19 @@ static void __wake_thread(void *arg)
             tal_system_sleep(300);
             continue;
         }
+
+        /* 待机常连：空闲时把与 xiaozhi.me 的会话提前握好（挂起不开麦），
+         * 唤醒命中后直接开麦，省掉每次 5 秒左右的 TLS+WS 握手 */
+        if (tal_system_get_millisecond() > s_spk_mute_until) {
+            (void)eink_xz_preconnect();
+        }
         if (tal_system_get_millisecond() < s_spk_mute_until) {
             sg_app.rec_active = FALSE;         /* 喇叭自声隔离窗：不采样不识别 */
             tal_system_sleep(200);
             continue;
         }
 
-        sg_app.rec_len = 0;
-        sg_app.rec_active = TRUE;
-        tal_system_sleep(WAKE_WIN_MS);
-        sg_app.rec_active = FALSE;
+        __wake_capture();
         /* 采样窗口可能横跨静默窗武装点：送识别前复查，横跨则整窗丢弃 */
         if (tal_system_get_millisecond() < s_spk_mute_until) {
             continue;
@@ -1846,6 +1977,7 @@ static void __wake_thread(void *arg)
         OPERATE_RET rt = __do_asr(q, sizeof(q));
         if (OPRT_OK != rt || '\0' == q[0]) {
             PR_ERR("[待机] 识别失败 %d", rt);
+            eink_xz_abort();
             tal_system_sleep(1500);
             continue;
         }
@@ -1858,6 +1990,7 @@ static void __wake_thread(void *arg)
         }
 
         if (!__wake_match(q)) {
+            eink_xz_abort();          /* 不是唤醒词：关掉投机建立的预连接 */
             continue;
         }
 

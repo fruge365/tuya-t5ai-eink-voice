@@ -49,10 +49,18 @@ extern const unsigned int g_tenclass_ca_pem_len;
 #define XZ_ECHO_GUARD_MS  1000         /* 播放后拾音丢弃窗（余音/间隙期） */
 #define XZ_UP_CHUNK     4              /* 每轮最多上行帧数 */
 
+#define XZ_PRE_TIMEOUT_MS  (15 * 60 * 1000) /* 常驻待机会话：15 分钟没人用它才关（握手 5s 太贵，别每次唤醒都付） */
+#define XZ_KEEPALIVE_MS    30000        /* 待机期间发 WS ping，尽量不让服务器踢掉空闲连接 */
+#define XZ_PRE_COOLDOWN_MS 2000   /* 服务器会踢掉空闲待机会话：2 秒内就热回来，缩小唤醒慢的窗口 */
+#define XZ_PRE_KEEP_MS     2500        /* 预连接期间只留最近 2.5 秒拾音 */        /* 两次预连接最小间隔，避免环境噪声反复触发握手 */
+#define XZ_PLAY_FRAME      1280        /* 40ms @16k PCM16 */
+#define XZ_BOOST_MS        3000        /* 会话开局增益补偿时长（功放起振期补音量） */
+
 /* 设备状态 */
 #define XZ_ST_IDLE      0
 #define XZ_ST_LISTEN    1
 #define XZ_ST_SPEAK     2
+#define XZ_ST_PAUSED    3       /* 预连接：已握手，等唤醒确认才开麦 */
 
 /***********************************************************
 ***********************typedef define***********************
@@ -65,6 +73,14 @@ typedef struct {
     volatile BOOL_T  active;        /* 会话进行中（mic 分流） */
     volatile BOOL_T  busy;          /* 连接中（OTA+握手，TLS 栈需求大） */
     volatile BOOL_T  start_req;     /* 请求开启会话（由 xz_call 线程执行） */
+    volatile BOOL_T  pre_req;       /* 预连接请求：握手完成后挂起，不开麦 */
+    volatile BOOL_T  paused;        /* 预连接已就绪、暂不上行 */
+    volatile BOOL_T  confirm;       /* 握手途中收到唤醒确认：直接开麦，别挂起 */
+    uint32_t keepalive_ms;          /* 待机会话上次 ping 时刻 */
+    volatile uint32_t pre_ms;       /* 预连接时间戳（超时与冷却判断） */
+    volatile BOOL_T  preroll;       /* 本会话首帧播放前先灌静音，等 DAC/功放进入稳态 */
+    uint32_t play_start_ms;         /* 本会话首次出声时刻（增益补偿基准） */
+    int      boost;                 /* 开局增益补偿百分比（0 关闭） */
 
     char     ota_url[160];
     char     ws_url[192];
@@ -642,12 +658,17 @@ static void __xz_on_audio(const uint8_t *data, uint32_t len)
 /* 麦克风 PCM 入环形缓冲（溢出丢最旧） */
 void eink_xz_on_pcm(const uint8_t *data, uint32_t len)
 {
-    if (!s_xz.active || NULL == s_xz.mic_ring) {
+    /* 预连接（paused）期间也收麦克风：这段时间用户多半已经开始说指令，
+     * 唤醒确认后这段音频会一起补发给服务器，避免开头几句话被丢掉 */
+    if (!(s_xz.active || s_xz.paused) || NULL == s_xz.mic_ring) {
         return;
     }
     uint32_t used = s_xz.mic_wr - s_xz.mic_rd;
-    if (used + len > XZ_MIC_RING_SZ) {
-        s_xz.mic_rd += (used + len) - XZ_MIC_RING_SZ;
+    /* 预连接挂起态没有消费者：只保留最近 2.5 秒，避免唤醒确认后把十几秒
+     * 旧音频（多半是静音/噪声）一起灌给服务器，推高 VAD 误判 */
+    const uint32_t cap = s_xz.paused ? (uint32_t)(XZ_PRE_KEEP_MS * 16 * 2) : XZ_MIC_RING_SZ;
+    if (used + len > cap) {
+        s_xz.mic_rd += (used + len) - cap;
     }
     for (uint32_t i = 0; i < len; i++) {
         s_xz.mic_ring[s_xz.mic_wr % XZ_MIC_RING_SZ] = data[i];
@@ -804,7 +825,7 @@ __xz_poll_fail:
 /***********************************************************
 **************************会话线程***************************
 ***********************************************************/
-static BOOL_T __xz_session_open(void)
+static BOOL_T __xz_session_open(BOOL_T paused_mode)
 {
     /* OPUS 编解码器初始化（状态结构体必须放 SRAM：PSRAM 走 QSPI 仅支持
      * 4 字节对齐访问，opus/SILK 内核按 int16/int8 粒度访问状态字段，
@@ -864,11 +885,47 @@ static BOOL_T __xz_session_open(void)
     s_xz.play_wr = 0; s_xz.play_rd = 0;
     s_xz.idle_ms = 0;
     s_xz.end_req = FALSE;
-    s_xz.active = TRUE;
-    s_xz.state = XZ_ST_LISTEN;
-    __xz_send_listen_start();
-    PR_NOTICE("[XZ] 小智对话就绪 请直接说话");
+    s_xz.preroll = TRUE;
+    s_xz.play_start_ms = 0;
+    if (s_xz.confirm) {
+        paused_mode = FALSE;        /* 握手途中唤醒已命中：别再挂起，直接开麦 */
+    }
+    s_xz.confirm = FALSE;
+    if (paused_mode) {
+        /* 只握手不开麦：服务器不会收到上行，也不会自己开口 */
+        s_xz.paused = TRUE;
+        s_xz.active = FALSE;
+        s_xz.state = XZ_ST_PAUSED;
+        s_xz.pre_ms = (uint32_t)tal_system_get_millisecond();
+        PR_NOTICE("[XZ] 预连接就绪（已握手，待唤醒确认后开麦）");
+    } else {
+        s_xz.paused = FALSE;
+        s_xz.active = TRUE;
+        s_xz.state = XZ_ST_LISTEN;
+        __xz_send_listen_start();
+        PR_NOTICE("[XZ] 小智对话就绪 请直接说话");
+    }
     return TRUE;
+}
+
+/* 会话结束：不撕连接，退回「待机会话」状态，下次唤醒直接开麦 */
+static void __xz_to_standby(void)
+{
+    if (!s_xz.ws_up) {
+        return;
+    }
+    s_xz.active = FALSE;
+    s_xz.paused = TRUE;
+    s_xz.state = XZ_ST_PAUSED;
+    s_xz.end_req = FALSE;
+    s_xz.idle_ms = 0;
+    s_xz.mic_wr = 0;
+    s_xz.mic_rd = 0;
+    s_xz.play_wr = 0;
+    s_xz.play_rd = 0;
+    s_xz.pre_ms = (uint32_t)tal_system_get_millisecond();
+    s_xz.keepalive_ms = s_xz.pre_ms;
+    PR_NOTICE("[XZ] 会话结束，连接留作待机（下次唤醒免握手）");
 }
 
 static void __xz_session_close(void)
@@ -880,7 +937,7 @@ static void __xz_session_close(void)
 }
 
 /* 实际的连接流程（在 xz_call 线程内执行，TLS 握手栈需求大） */
-static BOOL_T __xz_do_start(void)
+static BOOL_T __xz_do_start(BOOL_T paused_mode)
 {
     if (NULL == s_xz.mic_ring) {
         s_xz.mic_ring = (uint8_t *)tkl_system_psram_malloc(XZ_MIC_RING_SZ);
@@ -898,7 +955,7 @@ static BOOL_T __xz_do_start(void)
         return FALSE;
     }
 
-    if (!__xz_session_open()) {
+    if (!__xz_session_open(paused_mode)) {
         __xz_session_close();
         return FALSE;
     }
@@ -912,10 +969,12 @@ static void __xz_thread(void *arg)
 
     while (1) {
         /* 连接请求：OTA + TLS 握手都在本线程执行（栈 16KB） */
-        if (s_xz.start_req && !s_xz.active) {
+        if (s_xz.start_req && !s_xz.active && !s_xz.paused) {
+            BOOL_T pre = s_xz.pre_req;
             s_xz.start_req = FALSE;
+            s_xz.pre_req = FALSE;
             s_xz.busy = TRUE;
-            BOOL_T ok = __xz_do_start();
+            BOOL_T ok = __xz_do_start(pre);
             s_xz.busy = FALSE;
             if (!ok) {
                 __uart_reply("RSP:小智连接失败 见日志\r\n");
@@ -923,12 +982,38 @@ static void __xz_thread(void *arg)
             continue;
         }
 
-        if (!s_xz.active || !s_xz.ws_up) {
+        if (!(s_xz.active || s_xz.paused) || !s_xz.ws_up) {
             tal_system_sleep(100);
             continue;
         }
 
         __xz_poll();
+
+        /* 常驻待机会话：不开麦、不播放，等唤醒确认。
+         * 1) 连接被服务器断掉 → 立即关掉并按冷却重连，保持「醒来即用」
+         * 2) 每 30 秒发 WS ping 保活
+         * 3) 15 分钟没用才真正关闭 */
+        if (s_xz.paused) {
+            uint32_t now = (uint32_t)tal_system_get_millisecond();
+            if (!s_xz.ws_up) {
+                PR_NOTICE("[XZ] 待机会话被断开，重连");
+                s_xz.paused = FALSE;
+                s_xz.state = XZ_ST_IDLE;
+                s_xz.pre_ms = now;
+                __xz_session_close();
+            } else if (now - s_xz.keepalive_ms >= XZ_KEEPALIVE_MS) {
+                s_xz.keepalive_ms = now;
+                (void)__xz_ws_send(0x09, NULL, 0);      /* ping */
+            } else if (now - s_xz.pre_ms > XZ_PRE_TIMEOUT_MS) {
+                PR_NOTICE("[XZ] 待机会话空闲超时，关闭");
+                s_xz.paused = FALSE;
+                s_xz.state = XZ_ST_IDLE;
+                s_xz.pre_ms = now;
+                __xz_session_close();
+            }
+            tal_system_sleep(20);
+            continue;
+        }
 
         if (!s_xz.active || !s_xz.ws_up) {
             continue;
@@ -942,6 +1027,19 @@ static void __xz_thread(void *arg)
             PR_ERR("[XZ][DN] audio handle NULL, speaker 不可用");
             play_null_said = TRUE;
         }
+        /* 本会话首帧前先灌 240ms 静音：DAC 与功放从静置进入工作有起振过程，
+         * 直接开播会让开头一段声音明显偏小/听不见 */
+        if (s_xz.preroll && audio) {
+            static uint8_t zeros[XZ_PLAY_FRAME];
+            for (int i = 0; i < 6; i++) {
+                (void)tdl_audio_play(audio, zeros, sizeof(zeros));
+            }
+            s_xz.preroll = FALSE;
+            s_xz.play_start_ms = (uint32_t)tal_system_get_millisecond();
+            s_xz.last_play_ms = s_xz.play_start_ms;
+            PR_NOTICE("[XZ][DN] 播放预热 240ms（起振等待）");
+        }
+
         while ((s_xz.play_wr - s_xz.play_rd) >= 1280 && audio) {
             static uint8_t play[1280];
             static int play_pk = 0;
@@ -949,9 +1047,19 @@ static void __xz_thread(void *arg)
                 play[i] = s_xz.play_ring[(s_xz.play_rd + i) % XZ_PLAY_RING_SZ];
             }
             s_xz.play_rd += 1280;
-            /* 软件音量衰减（DAC 增益固定拉满保信噪比，音量在此控制） */
-            for (int i = 0; i < 640; i++) {
-                ((int16_t *)play)[i] = eink_xz_vol_scale(((int16_t *)play)[i]);
+            /* 软件音量衰减（DAC 增益固定 0dB 保信噪比，音量在此控制）
+             * 开局 XZ_BOOST_MS 内额外补 boost%，抵消功放起振期的音量偏低；
+             * 稳态后回落为设定音量（xz boost 0 可关闭补偿） */
+            {
+                uint32_t since = (s_xz.play_start_ms)
+                               ? ((uint32_t)tal_system_get_millisecond() - s_xz.play_start_ms)
+                               : 0xFFFFFFFF;
+                int extra = (0 != s_xz.play_start_ms && since < XZ_BOOST_MS) ? s_xz.boost : 0;
+                for (int i = 0; i < 640; i++) {
+                    int32_t v = ((int16_t *)play)[i];
+                    if (extra > 0) { v = (v * (100 + extra)) / 100; }
+                    ((int16_t *)play)[i] = eink_xz_vol_scale((int16_t)v);
+                }
             }
             /* 播放数据电平探针：核对从环形缓冲拷出的样本是否与解码端一致 */
             {
@@ -1043,7 +1151,7 @@ static void __xz_thread(void *arg)
                 PR_NOTICE("[XZ] %s", s_xz.end_req ? "结束小智对话" : "长时间没有说话，对话结束");
                 __uart_reply(s_xz.end_req ? "RSP:小智对话已结束\r\n" : "RSP:小智对话结束\r\n");
                 s_xz.end_req = FALSE;
-                __xz_session_close();
+                __xz_to_standby();      /* 连接留着待机，下次唤醒秒开 */
             }
         }
 
@@ -1075,7 +1183,17 @@ uint8_t eink_xz_get_speaker_vol(void)
 
 int16_t eink_xz_vol_scale(int16_t sample)
 {
-    return (int16_t)(((int32_t)sample * s_xz_spk_vol) / 100);
+    int32_t v = ((int32_t)sample * s_xz_spk_vol) / 100;
+    if (v > 32767) { v = 32767; }
+    if (v < -32768) { v = -32768; }
+    return (int16_t)v;
+}
+
+void eink_xz_set_boost(int pct)
+{
+    if (pct < 0) { pct = 0; }
+    if (pct > 60) { pct = 60; }
+    s_xz.boost = pct;
 }
 
 void eink_xz_set_enable(BOOL_T on)
@@ -1092,13 +1210,92 @@ BOOL_T eink_xz_is_active(void)
 /* 连接中或会话中（唤醒线程等待用） */
 BOOL_T eink_xz_engaged(void)
 {
-    return s_xz.active || s_xz.busy;
+    return s_xz.active || s_xz.busy || s_xz.paused;
+}
+
+BOOL_T eink_xz_is_paused(void)
+{
+    return s_xz.paused;
+}
+
+/* 预连接：与唤醒词识别并行做握手，命中后 eink_xz_arm() 立即开麦 */
+BOOL_T eink_xz_preconnect(void)
+{
+    if (!s_xz.enabled) {
+        return FALSE;
+    }
+    if (s_xz.active || s_xz.paused || s_xz.start_req || s_xz.busy) {
+        return FALSE;
+    }
+    if ((uint32_t)tal_system_get_millisecond() - s_xz.pre_ms < XZ_PRE_COOLDOWN_MS) {
+        return FALSE;   /* 刚连过又断开：冷却，防噪声反复握手 */
+    }
+    s_xz.pre_req = TRUE;
+    s_xz.start_req = TRUE;
+    PR_NOTICE("[XZ] 预连接请求（识别唤醒词期间并行握手）");
+    return TRUE;
+}
+
+/* 唤醒确认：预连接已就绪则立即开麦（缓冲的音频一并上行），否则发起正式会话 */
+BOOL_T eink_xz_arm(void)
+{
+    if (s_xz.active && s_xz.ws_up) {
+        return TRUE;
+    }
+    if (s_xz.paused && s_xz.ws_up) {
+        s_xz.paused = FALSE;
+        s_xz.active = TRUE;
+        s_xz.state = XZ_ST_LISTEN;
+        s_xz.end_req = FALSE;
+        s_xz.idle_ms = 0;
+        __xz_send_listen_start();
+        PR_NOTICE("[XZ] 唤醒确认 开麦上行（预连接缓冲 %u 字节一并补发）",
+                  (unsigned)(s_xz.mic_wr - s_xz.mic_rd));
+        return TRUE;
+    }
+    s_xz.confirm = TRUE;            /* 正在握手：让这次连接完成后直接开麦 */
+    if (!s_xz.busy && !s_xz.start_req) {
+        s_xz.pre_req = FALSE;
+        s_xz.start_req = TRUE;
+    }
+    s_xz.enabled = TRUE;
+    return TRUE;
+}
+
+/* 放弃预连接：唤醒词没命中、或识别失败时调用 */
+void eink_xz_abort(void)
+{
+    if (s_xz.paused) {
+        PR_NOTICE("[XZ] 未确认唤醒，关闭预连接");
+        s_xz.paused = FALSE;
+        s_xz.state = XZ_ST_IDLE;
+        s_xz.pre_ms = (uint32_t)tal_system_get_millisecond();
+        __xz_session_close();
+        return;
+    }
+    s_xz.pre_req = FALSE;
+    if (!s_xz.active && s_xz.start_req) {
+        s_xz.start_req = FALSE;
+        s_xz.pre_ms = (uint32_t)tal_system_get_millisecond();
+        PR_NOTICE("[XZ] 取消未完成的预连接");
+    }
 }
 
 void eink_xz_end(void)
 {
     if (s_xz.active) {
         s_xz.end_req = TRUE;
+    }
+}
+
+/* 关闭待机会话（xz off / 长时间无网时用） */
+void eink_xz_standby_off(void)
+{
+    if (s_xz.paused) {
+        s_xz.paused = FALSE;
+        s_xz.state = XZ_ST_IDLE;
+        s_xz.pre_ms = (uint32_t)tal_system_get_millisecond();
+        __xz_session_close();
     }
 }
 
@@ -1118,6 +1315,8 @@ void eink_xz_init(void)
     memset(&s_xz, 0, sizeof(s_xz));
     s_xz.enabled = TRUE;   /* 默认开启：唤醒词命中后走小智通道（xiaozhi.me） */
     s_xz.srv_rate = 16000;
+    s_xz.boost = 30;       /* 会话开局 3 秒额外 +30% 增益（功放起振补偿） */
+    s_xz.play_start_ms = 0;
     __xz_load_identity();
     snprintf(s_xz.ota_url, sizeof(s_xz.ota_url), XZ_OTA_URL_DEF);
 
